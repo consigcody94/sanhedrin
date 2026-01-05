@@ -13,7 +13,8 @@ from sanhedrin.core.types import (
     TextPart,
     FilePart,
     DataPart,
-    FileInfo,
+    FileWithBytes,
+    FileWithUri,
     # Messages
     Message,
     # Tasks
@@ -24,7 +25,6 @@ from sanhedrin.core.types import (
     AgentCard,
     AgentSkill,
     AgentCapabilities,
-    AgentAuthentication,
     AgentProvider,
     # JSON-RPC
     JSONRPCRequest,
@@ -58,7 +58,8 @@ __all__ = [
     "TextPart",
     "FilePart",
     "DataPart",
-    "FileInfo",
+    "FileWithBytes",
+    "FileWithUri",
     "Message",
     "Task",
     "TaskStatus",
@@ -66,7 +67,6 @@ __all__ = [
     "AgentCard",
     "AgentSkill",
     "AgentCapabilities",
-    "AgentAuthentication",
     "AgentProvider",
     "JSONRPCRequest",
     "JSONRPCResponse",

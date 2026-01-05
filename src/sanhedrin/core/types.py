@@ -354,6 +354,14 @@ class HTTPAuthSecurityScheme(SecurityScheme):
     )
 
 
+class AgentAuthentication(SanhedrinBaseModel):
+    """Agent authentication configuration."""
+
+    schemes: list[str] = Field(
+        default_factory=list, description="Supported authentication schemes"
+    )
+
+
 class AgentCard(SanhedrinBaseModel):
     """
     A2A Agent Card - self-describing agent manifest.
@@ -409,6 +417,9 @@ class AgentCard(SanhedrinBaseModel):
     )
     icon_url: str | None = Field(
         default=None, alias="iconUrl", description="Agent icon URL"
+    )
+    authentication: AgentAuthentication | None = Field(
+        default=None, description="Authentication configuration"
     )
     supports_authenticated_extended_card: bool = Field(
         default=False,

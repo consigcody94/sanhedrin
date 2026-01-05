@@ -363,9 +363,11 @@ class InputValidator:
 
     def validate_context(self, context: list[Any]) -> list[Any]:
         """Validate context messages."""
-        result = validate_context_length(context)
-        if not result.valid:
-            raise ValidationError(result.error or "Invalid context", field="context")
+        if len(context) > self.max_context_messages:
+            raise ValidationError(
+                f"Context exceeds maximum of {self.max_context_messages} messages",
+                field="context"
+            )
         return context
 
     def validate_metadata(self, metadata: dict[str, Any]) -> dict[str, Any]:

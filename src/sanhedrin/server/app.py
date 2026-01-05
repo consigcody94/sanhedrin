@@ -27,7 +27,7 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from sanhedrin.adapters import get_adapter, register_default_adapters
 from sanhedrin.adapters.base import BaseAdapter
-from sanhedrin.core.types import JSONRPCRequest, JSONRPCResponse
+from sanhedrin.core.types import JSONRPCRequest, JSONRPCErrorResponse, JSONRPCError
 from sanhedrin.server.task_manager import TaskManager
 from sanhedrin.server.handlers import JSONRPCHandler
 from sanhedrin.server.agent_card import AgentCardBuilder
@@ -309,11 +309,11 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
 
         response = await _handler.handle(rpc_request)
 
-        # Track completion
-        if response.result and not response.error:
+        # Track completion - check response type
+        if hasattr(response, 'result') and response.result:
             if rpc_request.method == "message/send":
                 _metrics["tasks_completed"] += 1
-        elif response.error:
+        elif hasattr(response, 'error') and response.error:
             if rpc_request.method == "message/send":
                 _metrics["tasks_failed"] += 1
 
@@ -323,12 +323,12 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
 
     except ValueError as e:
         logger.warning(f"Invalid request: {e}")
-        error_response = JSONRPCResponse(
+        error_response = JSONRPCErrorResponse(
             id=None,
-            error={
-                "code": -32600,
-                "message": f"Invalid request: {str(e)}",
-            },
+            error=JSONRPCError(
+                code=-32600,
+                message=f"Invalid request: {str(e)}",
+            ),
         )
         return JSONResponse(
             content=error_response.model_dump(by_alias=True, exclude_none=True),
@@ -336,12 +336,12 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
         )
     except Exception as e:
         logger.error(f"Request processing error: {e}")
-        error_response = JSONRPCResponse(
+        error_response = JSONRPCErrorResponse(
             id=None,
-            error={
-                "code": -32700,
-                "message": "Parse error",
-            },
+            error=JSONRPCError(
+                code=-32700,
+                message="Parse error",
+            ),
         )
         return JSONResponse(
             content=error_response.model_dump(by_alias=True, exclude_none=True),

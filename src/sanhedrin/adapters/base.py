@@ -272,7 +272,9 @@ class BaseAdapter(ABC):
 
         context_parts = []
         for msg in context:
-            role = "User" if msg.role.value == "user" else "Assistant"
+            # Handle both enum and string role values
+            role_value = msg.role.value if hasattr(msg.role, 'value') else msg.role
+            role = "User" if role_value == "user" else "Assistant"
             content = self.message_to_prompt(msg)
             context_parts.append(f"{role}: {content}")
 

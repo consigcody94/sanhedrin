@@ -15,7 +15,8 @@ from typing import TYPE_CHECKING, Any, AsyncIterator
 
 from sanhedrin.core.types import (
     JSONRPCRequest,
-    JSONRPCResponse,
+    JSONRPCSuccessResponse,
+    JSONRPCErrorResponse,
     JSONRPCError,
     Message,
     Role,
@@ -69,7 +70,7 @@ class JSONRPCHandler:
         """
         self.task_manager = task_manager
 
-    async def handle(self, request: JSONRPCRequest) -> JSONRPCResponse:
+    async def handle(self, request: JSONRPCRequest) -> JSONRPCSuccessResponse | JSONRPCErrorResponse:
         """
         Handle a JSON-RPC request.
 
@@ -109,7 +110,7 @@ class JSONRPCHandler:
                     f"Method not implemented: {request.method}",
                 )
 
-            return JSONRPCResponse(
+            return JSONRPCSuccessResponse(
                 id=request.id,
                 result=result,
             )
@@ -337,9 +338,9 @@ class JSONRPCHandler:
         request_id: str | int | None,
         code: int,
         message: str,
-    ) -> JSONRPCResponse:
+    ) -> JSONRPCErrorResponse:
         """Create error response."""
-        return JSONRPCResponse(
+        return JSONRPCErrorResponse(
             id=request_id,
             error=JSONRPCError(
                 code=code,

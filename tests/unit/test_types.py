@@ -3,7 +3,6 @@ Tests for core types.
 """
 
 import pytest
-from datetime import datetime, timezone
 
 from sanhedrin.core.types import (
     TaskState,
@@ -13,14 +12,17 @@ from sanhedrin.core.types import (
     TextPart,
     DataPart,
     FilePart,
-    FileInfo,
+    FileWithBytes,
+    FileWithUri,
     Artifact,
     Task,
     AgentSkill,
     AgentCapabilities,
     AgentCard,
     JSONRPCRequest,
-    JSONRPCResponse,
+    JSONRPCSuccessResponse,
+    JSONRPCErrorResponse,
+    JSONRPCError,
 )
 
 
@@ -54,16 +56,13 @@ class TestTaskStatus:
 
         assert status.state == TaskState.SUBMITTED
 
-    def test_status_with_timestamps(self) -> None:
-        """Create status with timestamps."""
-        now = datetime.now(timezone.utc)
-        status = TaskStatus(
-            state=TaskState.WORKING,
-            created_at=now,
-            updated_at=now,
-        )
+    def test_status_with_message(self) -> None:
+        """Create status with message."""
+        msg = Message(role=Role.AGENT, parts=[TextPart(text="Working...")])
+        status = TaskStatus(state=TaskState.WORKING, message=msg)
 
-        assert status.created_at == now
+        assert status.message is not None
+        assert status.timestamp is not None
 
 
 class TestMessage:
@@ -93,8 +92,8 @@ class TestMessage:
         msg = Message(
             role=Role.USER,
             parts=[TextPart(text="Hello")],
-            context_id="ctx-123",
-            task_id="task-456",
+            contextId="ctx-123",
+            taskId="task-456",
         )
 
         assert msg.context_id == "ctx-123"
@@ -108,29 +107,43 @@ class TestParts:
         """Create text part."""
         part = TextPart(text="Hello, world!")
 
-        assert part.type == "text"
+        assert part.kind == "text"
         assert part.text == "Hello, world!"
 
     def test_data_part(self) -> None:
         """Create data part."""
         part = DataPart(
-            mime_type="application/json",
-            data='{"key": "value"}',
+            data={"key": "value"},
         )
 
-        assert part.type == "data"
-        assert part.mime_type == "application/json"
+        assert part.kind == "data"
+        assert part.data["key"] == "value"
 
-    def test_file_part(self) -> None:
-        """Create file part."""
-        file_info = FileInfo(
-            name="test.py",
-            mime_type="text/x-python",
+    def test_file_part_with_bytes(self) -> None:
+        """Create file part with bytes."""
+        file_content = FileWithBytes(
+            bytes="SGVsbG8gV29ybGQ=",  # base64 "Hello World"
+            mimeType="text/plain",
+            name="test.txt",
         )
-        part = FilePart(file=file_info)
+        part = FilePart(file=file_content)
 
-        assert part.type == "file"
-        assert part.file.name == "test.py"
+        assert part.kind == "file"
+        assert part.file.name == "test.txt"
+
+    def test_file_part_with_uri(self) -> None:
+        """Create file part with URI."""
+        file_ref = FileWithUri(
+            uri="https://example.com/file.py",
+            mimeType="text/x-python",
+            name="example.py",
+        )
+        part = FilePart(file=file_ref)
+
+        assert part.kind == "file"
+        # The file is typed as union, access via the actual type
+        assert isinstance(part.file, FileWithUri)
+        assert part.file.uri == "https://example.com/file.py"
 
 
 class TestArtifact:
@@ -139,24 +152,23 @@ class TestArtifact:
     def test_create_artifact(self) -> None:
         """Create artifact with parts."""
         artifact = Artifact(
-            artifact_id="art-123",
             name="response",
             parts=[TextPart(text="Content")],
         )
 
-        assert artifact.artifact_id == "art-123"
+        assert artifact.artifact_id is not None
         assert artifact.name == "response"
         assert len(artifact.parts) == 1
 
     def test_artifact_with_metadata(self) -> None:
         """Create artifact with metadata."""
         artifact = Artifact(
-            artifact_id="art-123",
             name="code",
             parts=[TextPart(text="print('hello')")],
             metadata={"language": "python"},
         )
 
+        assert artifact.metadata is not None
         assert artifact.metadata["language"] == "python"
 
 
@@ -173,13 +185,14 @@ class TestTask:
 
         task = Task(
             id="task-123",
-            context_id="ctx-456",
+            contextId="ctx-456",
             status=status,
             history=[message],
         )
 
         assert task.id == "task-123"
         assert task.status.state == TaskState.SUBMITTED
+        assert task.history is not None
         assert len(task.history) == 1
 
 
@@ -207,15 +220,16 @@ class TestAgentCapabilities:
         """Default capabilities."""
         caps = AgentCapabilities()
 
-        assert caps.streaming is False
-        assert caps.push_notifications is False
+        # Defaults are None, not False
+        assert caps.streaming is None
+        assert caps.push_notifications is None
 
     def test_custom_capabilities(self) -> None:
         """Custom capabilities."""
         caps = AgentCapabilities(
             streaming=True,
-            push_notifications=True,
-            state_transition_history=True,
+            pushNotifications=True,
+            stateTransitionHistory=True,
         )
 
         assert caps.streaming is True
@@ -228,29 +242,22 @@ class TestJSONRPCRequest:
     def test_minimal_request(self) -> None:
         """Create minimal request."""
         request = JSONRPCRequest(
+            id="req-123",
             method="test/method",
         )
 
         assert request.jsonrpc == "2.0"
         assert request.method == "test/method"
 
-    def test_request_with_id(self) -> None:
-        """Create request with ID."""
-        request = JSONRPCRequest(
-            method="test/method",
-            id="req-123",
-        )
-
-        assert request.id == "req-123"
-
     def test_request_with_params(self) -> None:
         """Create request with parameters."""
         request = JSONRPCRequest(
+            id=1,
             method="message/send",
             params={"message": {"role": "user"}},
-            id=1,
         )
 
+        assert request.params is not None
         assert request.params["message"]["role"] == "user"
 
 
@@ -259,24 +266,24 @@ class TestJSONRPCResponse:
 
     def test_success_response(self) -> None:
         """Create success response."""
-        response = JSONRPCResponse(
+        response = JSONRPCSuccessResponse(
             id="req-123",
             result={"status": "ok"},
         )
 
         assert response.id == "req-123"
         assert response.result["status"] == "ok"
-        assert response.error is None
 
     def test_error_response(self) -> None:
         """Create error response."""
-        response = JSONRPCResponse(
+        error = JSONRPCError(
+            code=-32600,
+            message="Invalid request",
+        )
+        response = JSONRPCErrorResponse(
             id="req-123",
-            error={
-                "code": -32600,
-                "message": "Invalid request",
-            },
+            error=error,
         )
 
-        assert response.error["code"] == -32600
-        assert response.result is None
+        assert response.error.code == -32600
+        assert response.error.message == "Invalid request"
