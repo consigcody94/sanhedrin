@@ -7,29 +7,27 @@ Integrates adapters with the A2A task model.
 
 from __future__ import annotations
 
-import asyncio
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from datetime import UTC, datetime
 from uuid import uuid4
 
-from sanhedrin.core.types import (
-    Task,
-    TaskState,
-    TaskStatus,
-    Message,
-    Role,
-    TextPart,
-    Artifact,
-    TaskStatusUpdateEvent,
-    TaskArtifactUpdateEvent,
+from sanhedrin.adapters.base import BaseAdapter
+from sanhedrin.core.errors import (
+    InvalidStateTransitionError,
+    TaskNotFoundError,
 )
 from sanhedrin.core.state_machine import TaskStateMachine
-from sanhedrin.core.errors import (
-    TaskNotFoundError,
-    InvalidStateTransitionError,
-    AdapterExecutionError,
+from sanhedrin.core.types import (
+    Artifact,
+    Message,
+    Role,
+    Task,
+    TaskArtifactUpdateEvent,
+    TaskState,
+    TaskStatus,
+    TaskStatusUpdateEvent,
+    TextPart,
 )
-from sanhedrin.adapters.base import BaseAdapter, StreamChunk
 
 
 def generate_id() -> str:
@@ -39,7 +37,7 @@ def generate_id() -> str:
 
 def utc_now() -> datetime:
     """Get current UTC time."""
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class TaskManager:
@@ -391,13 +389,10 @@ class TaskManager:
         task = self.get_task(task_id)
         task.status.state = TaskState.FAILED
         task.status.updated_at = utc_now()
-        task.status.message = TaskStatus(
-            state=TaskState.FAILED,
-            message=Message(
-                role=Role.AGENT,
-                parts=[TextPart(text=f"Error: {error}")],
-            ),
-        ).message
+        task.status.message = Message(
+            role=Role.AGENT,
+            parts=[TextPart(text=f"Error: {error}")],
+        )
 
         state_machine = self._state_machines[task_id]
         if state_machine.can_transition_to(TaskState.FAILED):
@@ -435,13 +430,24 @@ class TaskManager:
                 TaskState.FAILED,
                 TaskState.CANCELED,
             ):
-                age = (now - (task.status.updated_at or task.status.created_at)).total_seconds()
+                age = (
+                    now - (task.status.updated_at or task.status.created_at)
+                ).total_seconds()
                 if age > max_age_seconds:
                     to_remove.append(task_id)
+
+        # Collect context_ids of tasks being removed
+        removed_context_ids = {self._tasks[tid].context_id for tid in to_remove}
 
         for task_id in to_remove:
             del self._tasks[task_id]
             del self._state_machines[task_id]
+
+        # Clean orphaned contexts (no remaining tasks reference them)
+        active_context_ids = {t.context_id for t in self._tasks.values()}
+        orphaned = removed_context_ids - active_context_ids
+        for ctx_id in orphaned:
+            self._contexts.pop(ctx_id, None)
 
         return len(to_remove)
 

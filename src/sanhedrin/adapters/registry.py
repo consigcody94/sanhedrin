@@ -10,12 +10,12 @@ from __future__ import annotations
 from typing import TYPE_CHECKING, Any
 
 from sanhedrin.core.errors import (
-    AdapterNotFoundError,
     AdapterInitializationError,
+    AdapterNotFoundError,
 )
 
 if TYPE_CHECKING:
-    from sanhedrin.adapters.base import BaseAdapter, AdapterConfig
+    from sanhedrin.adapters.base import AdapterConfig, BaseAdapter
 
 
 class AdapterRegistry:
@@ -65,8 +65,7 @@ class AdapterRegistry:
         """
         if name in self._adapters and not override:
             raise ValueError(
-                f"Adapter '{name}' already registered. "
-                f"Use override=True to replace."
+                f"Adapter '{name}' already registered. Use override=True to replace."
             )
         self._adapters[name] = adapter_class
 
@@ -99,10 +98,9 @@ class AdapterRegistry:
             AdapterNotFoundError: If adapter not registered
         """
         if name not in self._adapters:
-            available = ", ".join(self._adapters.keys()) or "none"
             raise AdapterNotFoundError(
-                adapter=name,
-                message=f"Available adapters: {available}",
+                name=name,
+                available=list(self._adapters.keys()),
             )
         return self._adapters[name]
 
@@ -220,8 +218,8 @@ def register_default_adapters() -> None:
 
     # Import adapters lazily to avoid circular imports
     from sanhedrin.adapters.claude_adapter import ClaudeCodeAdapter
-    from sanhedrin.adapters.gemini_adapter import GeminiCLIAdapter
     from sanhedrin.adapters.codex_adapter import CodexCLIAdapter
+    from sanhedrin.adapters.gemini_adapter import GeminiCLIAdapter
     from sanhedrin.adapters.ollama_adapter import OllamaAdapter
 
     # Register with override to allow re-registration

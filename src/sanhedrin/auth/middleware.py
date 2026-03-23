@@ -8,18 +8,19 @@ from __future__ import annotations
 
 import hashlib
 import hmac
+import logging
 import secrets
 import time
+from collections.abc import Awaitable, Callable
 from dataclasses import dataclass, field
-from typing import Any, Callable, Awaitable
+from typing import Any
 
-from fastapi import Request, HTTPException, status
+from fastapi import HTTPException, Request, status
 from fastapi.security import APIKeyHeader, HTTPBearer
 from starlette.middleware.base import BaseHTTPMiddleware
 from starlette.responses import Response
 
-from sanhedrin.core.errors import AuthenticationRequiredError, AuthorizationFailedError
-
+logger = logging.getLogger(__name__)
 
 # Security headers
 api_key_header = APIKeyHeader(name="X-API-Key", auto_error=False)
@@ -74,6 +75,7 @@ class RateLimiter:
         self.config = config
         self._buckets: dict[str, dict[str, Any]] = {}
         self._cleanup_interval = 300  # 5 minutes
+        self._last_cleanup = time.time()
 
     def _get_bucket_key(self, identifier: str) -> str:
         """Generate bucket key from identifier."""
@@ -83,8 +85,7 @@ class RateLimiter:
         """Remove expired buckets."""
         now = time.time()
         expired = [
-            k for k, v in self._buckets.items()
-            if now - v.get("last_access", 0) > 3600
+            k for k, v in self._buckets.items() if now - v.get("last_access", 0) > 3600
         ]
         for key in expired:
             del self._buckets[key]
@@ -118,10 +119,7 @@ class RateLimiter:
 
         # Refill tokens (1 per second up to burst_size)
         elapsed = now - bucket["last_refill"]
-        new_tokens = min(
-            self.config.burst_size,
-            bucket["tokens"] + elapsed
-        )
+        new_tokens = min(self.config.burst_size, bucket["tokens"] + elapsed)
         bucket["tokens"] = new_tokens
         bucket["last_refill"] = now
 
@@ -138,7 +136,8 @@ class RateLimiter:
         # Check limits
         limit_info = {
             "remaining_tokens": int(bucket["tokens"]),
-            "minute_remaining": self.config.requests_per_minute - bucket["minute_count"],
+            "minute_remaining": self.config.requests_per_minute
+            - bucket["minute_count"],
             "hour_remaining": self.config.requests_per_hour - bucket["hour_count"],
         }
 
@@ -157,12 +156,18 @@ class RateLimiter:
         bucket["hour_count"] += 1
 
         limit_info["remaining_tokens"] = int(bucket["tokens"])
-        limit_info["minute_remaining"] = self.config.requests_per_minute - bucket["minute_count"]
-        limit_info["hour_remaining"] = self.config.requests_per_hour - bucket["hour_count"]
+        limit_info["minute_remaining"] = (
+            self.config.requests_per_minute - bucket["minute_count"]
+        )
+        limit_info["hour_remaining"] = (
+            self.config.requests_per_hour - bucket["hour_count"]
+        )
 
-        # Periodic cleanup
-        if len(self._buckets) > 10000:
+        # Periodic time-based cleanup
+        now_check = time.time()
+        if now_check - self._last_cleanup > self._cleanup_interval:
             self._cleanup_old_buckets()
+            self._last_cleanup = now_check
 
         return True, limit_info
 
@@ -275,10 +280,15 @@ class SecurityMiddleware(BaseHTTPMiddleware):
         if auth_header and auth_header.startswith("Bearer "):
             return auth_header[7:]
 
-        # Check query param if allowed
+        # Check query param if allowed (deprecated — keys visible in logs/history)
         if self.config.api_key.allow_query_param:
             api_key = request.query_params.get(self.config.api_key.query_param_name)
             if api_key:
+                logger.warning(
+                    "API key passed via query parameter — this is deprecated and insecure. "
+                    "Use the %s header or Authorization: Bearer instead.",
+                    self.config.api_key.header_name,
+                )
                 return api_key
 
         return None
@@ -336,7 +346,9 @@ class SecurityMiddleware(BaseHTTPMiddleware):
                     media_type="application/json",
                 )
                 response.headers["Retry-After"] = "60"
-                response.headers["X-RateLimit-Remaining"] = str(limit_info["minute_remaining"])
+                response.headers["X-RateLimit-Remaining"] = str(
+                    limit_info["minute_remaining"]
+                )
                 return response
 
         # Process request
@@ -361,8 +373,13 @@ def create_security_config_from_env() -> SecurityConfig:
             keys=api_keys,
         ),
         rate_limit=RateLimitConfig(
-            enabled=os.environ.get("SANHEDRIN_RATE_LIMIT_ENABLED", "true").lower() == "true",
-            requests_per_minute=int(os.environ.get("SANHEDRIN_RATE_LIMIT_PER_MINUTE", "60")),
-            requests_per_hour=int(os.environ.get("SANHEDRIN_RATE_LIMIT_PER_HOUR", "1000")),
+            enabled=os.environ.get("SANHEDRIN_RATE_LIMIT_ENABLED", "true").lower()
+            == "true",
+            requests_per_minute=int(
+                os.environ.get("SANHEDRIN_RATE_LIMIT_PER_MINUTE", "60")
+            ),
+            requests_per_hour=int(
+                os.environ.get("SANHEDRIN_RATE_LIMIT_PER_HOUR", "1000")
+            ),
         ),
     )

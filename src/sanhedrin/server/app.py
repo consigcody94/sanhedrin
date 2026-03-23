@@ -14,110 +14,70 @@ Endpoints:
 from __future__ import annotations
 
 import asyncio
+import json
 import logging
-import os
 import time
+import uuid
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
-from datetime import datetime, timezone
-from typing import Any, AsyncIterator
+from typing import Any
 
-from fastapi import FastAPI, Request, HTTPException
-from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import JSONResponse, PlainTextResponse, StreamingResponse
 
 from sanhedrin.adapters import get_adapter, register_default_adapters
-from sanhedrin.adapters.base import BaseAdapter
-from sanhedrin.core.types import JSONRPCRequest, JSONRPCErrorResponse, JSONRPCError
-from sanhedrin.server.task_manager import TaskManager
-from sanhedrin.server.handlers import JSONRPCHandler
-from sanhedrin.server.agent_card import AgentCardBuilder
 from sanhedrin.auth import (
-    SecurityMiddleware,
-    SecurityConfig,
     APIKeyConfig,
     RateLimitConfig,
-    create_security_config_from_env,
+    SecurityConfig,
+    SecurityMiddleware,
 )
-
-
-# Configure logging
-logging.basicConfig(
-    level=os.environ.get("SANHEDRIN_LOG_LEVEL", "INFO"),
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s",
-    datefmt="%Y-%m-%d %H:%M:%S",
+from sanhedrin.config.settings import get_settings
+from sanhedrin.core.errors import SanhedrinError
+from sanhedrin.core.types import (
+    JSONRPCError,
+    JSONRPCErrorResponse,
+    JSONRPCRequest,
+    JSONRPCSuccessResponse,
 )
+from sanhedrin.logging import configure_logging
+from sanhedrin.server import metrics as prom
+from sanhedrin.server.agent_card import AgentCardBuilder
+from sanhedrin.server.handlers import JSONRPCHandler
+from sanhedrin.server.task_manager import TaskManager
+
 logger = logging.getLogger("sanhedrin.server")
 
 
-# Global state (protected by asyncio locks for thread safety)
-_adapter: BaseAdapter | None = None
-_task_manager: TaskManager | None = None
-_handler: JSONRPCHandler | None = None
-_agent_card_builder: AgentCardBuilder | None = None
-_cleanup_task: asyncio.Task[None] | None = None
-_state_lock = asyncio.Lock()
-
-# Metrics
-_metrics = {
-    "requests_total": 0,
-    "requests_success": 0,
-    "requests_error": 0,
-    "tasks_created": 0,
-    "tasks_completed": 0,
-    "tasks_failed": 0,
-    "startup_time": None,
-    "last_cleanup": None,
-    "tasks_cleaned": 0,
-}
-
-
-def get_adapter_name() -> str:
-    """Get adapter name from environment."""
-    return os.environ.get("SANHEDRIN_ADAPTER", "claude-code")
-
-
-def get_base_url() -> str:
-    """Get base URL from environment."""
-    host = os.environ.get("SANHEDRIN_HOST", "localhost")
-    port = os.environ.get("SANHEDRIN_PORT", "8000")
-    return os.environ.get("SANHEDRIN_BASE_URL", f"http://{host}:{port}")
-
-
-def get_cors_origins() -> list[str]:
-    """Get allowed CORS origins from environment."""
-    origins_str = os.environ.get("SANHEDRIN_CORS_ORIGINS", "")
-    if not origins_str:
-        # Default to no CORS in production, localhost in development
-        if os.environ.get("SANHEDRIN_ENV", "production") == "development":
-            return ["http://localhost:3000", "http://localhost:8000", "http://127.0.0.1:3000"]
-        return []
-    return [o.strip() for o in origins_str.split(",") if o.strip()]
-
-
-async def cleanup_tasks_periodically() -> None:
+async def cleanup_tasks_periodically(app: FastAPI) -> None:
     """Background task to clean up old completed tasks."""
-    global _metrics
-    cleanup_interval = int(os.environ.get("SANHEDRIN_CLEANUP_INTERVAL", "300"))  # 5 min
-    max_task_age = int(os.environ.get("SANHEDRIN_TASK_MAX_AGE", "3600"))  # 1 hour
+    settings = get_settings()
+    cleanup_interval = settings.task.cleanup_interval
+    max_task_age = settings.task.task_max_age
 
-    logger.info(f"Task cleanup started (interval: {cleanup_interval}s, max_age: {max_task_age}s)")
+    logger.info(
+        "Task cleanup started (interval: %ds, max_age: %ds)",
+        cleanup_interval,
+        max_task_age,
+    )
 
     while True:
         try:
             await asyncio.sleep(cleanup_interval)
 
-            if _task_manager is not None:
-                cleaned = _task_manager.cleanup_completed(max_age_seconds=max_task_age)
+            task_manager: TaskManager | None = getattr(app.state, "task_manager", None)
+            if task_manager is not None:
+                cleaned = task_manager.cleanup_completed(max_age_seconds=max_task_age)
                 if cleaned > 0:
-                    logger.info(f"Cleaned up {cleaned} old tasks")
-                    _metrics["tasks_cleaned"] += cleaned
-                _metrics["last_cleanup"] = datetime.now(timezone.utc).isoformat()
+                    logger.info("Cleaned up %d old tasks", cleaned)
+                    prom.tasks_cleaned.inc(cleaned)
 
         except asyncio.CancelledError:
             logger.info("Task cleanup stopped")
             break
         except Exception as e:
-            logger.error(f"Error in task cleanup: {e}")
+            logger.error("Error in task cleanup: %s", e)
 
 
 @asynccontextmanager
@@ -128,7 +88,13 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     Initializes adapter and task manager on startup.
     Handles graceful shutdown with task draining.
     """
-    global _adapter, _task_manager, _handler, _agent_card_builder, _cleanup_task, _metrics
+    settings = get_settings()
+
+    # Configure structured logging
+    configure_logging(
+        log_level=settings.log_level,
+        json_output=settings.log_json,
+    )
 
     logger.info("Starting Sanhedrin A2A Server...")
     start_time = time.time()
@@ -138,58 +104,70 @@ async def lifespan(app: FastAPI) -> AsyncIterator[None]:
     logger.debug("Registered default adapters")
 
     # Get configured adapter
-    adapter_name = get_adapter_name()
-    logger.info(f"Loading adapter: {adapter_name}")
+    adapter_name = settings.adapter.adapter
+    logger.info("Loading adapter: %s", adapter_name)
 
-    async with _state_lock:
-        _adapter = get_adapter(adapter_name)
+    adapter = get_adapter(adapter_name)
+    await adapter.initialize()
+    logger.info("Adapter %s initialized successfully", adapter_name)
 
-        # Initialize adapter
-        await _adapter.initialize()
-        logger.info(f"Adapter {adapter_name} initialized successfully")
+    # Create task manager and handler
+    task_manager = TaskManager(adapter)
+    handler = JSONRPCHandler(task_manager)
 
-        # Create task manager and handler
-        _task_manager = TaskManager(_adapter)
-        _handler = JSONRPCHandler(_task_manager)
+    # Create agent card builder
+    agent_card_builder = AgentCardBuilder(
+        adapter,
+        settings.get_base_url(),
+        provider_name=settings.provider_name,
+        provider_url=settings.provider_url,
+    )
 
-        # Create agent card builder
-        _agent_card_builder = AgentCardBuilder(
-            _adapter,
-            get_base_url(),
-            provider_name="Sanhedrin",
-            provider_url="https://github.com/sanhedrin",
-        )
+    # Store on app.state for dependency injection
+    app.state.adapter = adapter
+    app.state.task_manager = task_manager
+    app.state.handler = handler
+    app.state.agent_card_builder = agent_card_builder
 
-    # Start background cleanup task
-    _cleanup_task = asyncio.create_task(cleanup_tasks_periodically())
+    logger.info("Server started in %.2fs", time.time() - start_time)
 
-    _metrics["startup_time"] = datetime.now(timezone.utc).isoformat()
-    logger.info(f"Server started in {time.time() - start_time:.2f}s")
-
-    yield
+    # Use TaskGroup for structured concurrency
+    try:
+        async with asyncio.TaskGroup() as tg:
+            tg.create_task(cleanup_tasks_periodically(app))
+            yield
+            # TaskGroup cancels all tasks on scope exit
+    except* asyncio.CancelledError:
+        pass
 
     # Graceful shutdown
     logger.info("Shutting down Sanhedrin A2A Server...")
-
-    # Cancel cleanup task
-    if _cleanup_task is not None:
-        _cleanup_task.cancel()
-        try:
-            await _cleanup_task
-        except asyncio.CancelledError:
-            pass
-
-    # Wait for in-flight requests (grace period)
-    grace_period = int(os.environ.get("SANHEDRIN_SHUTDOWN_GRACE", "5"))
-    logger.info(f"Waiting {grace_period}s for in-flight requests...")
+    grace_period = settings.server.shutdown_grace_period
+    logger.info("Waiting %ds for in-flight requests...", grace_period)
     await asyncio.sleep(grace_period)
 
-    async with _state_lock:
-        _adapter = None
-        _task_manager = None
-        _handler = None
+    app.state.adapter = None
+    app.state.task_manager = None
+    app.state.handler = None
 
     logger.info("Server shutdown complete")
+
+
+def _create_security_config() -> SecurityConfig:
+    """Create security config from Settings."""
+    settings = get_settings()
+    return SecurityConfig(
+        api_key=APIKeyConfig(
+            enabled=settings.security.auth_enabled,
+            keys=set(settings.security.api_keys_list),
+        ),
+        rate_limit=RateLimitConfig(
+            enabled=settings.security.rate_limit_enabled,
+            requests_per_minute=settings.security.rate_limit_per_minute,
+            requests_per_hour=settings.security.rate_limit_per_hour,
+            burst_size=settings.security.rate_limit_burst,
+        ),
+    )
 
 
 # Create FastAPI app
@@ -202,76 +180,91 @@ app = FastAPI(
     lifespan=lifespan,
 )
 
+# Configure CORS from settings
+_settings = get_settings()
+_cors_origins = _settings.security.cors_origins_list
+if not _cors_origins and _settings.is_development:
+    _cors_origins = [
+        "http://localhost:3000",
+        "http://localhost:8000",
+        "http://127.0.0.1:3000",
+    ]
 
-# Configure CORS properly - restrict origins in production
-cors_origins = get_cors_origins()
-if cors_origins:
+if _cors_origins:
     app.add_middleware(
         CORSMiddleware,
-        allow_origins=cors_origins,
+        allow_origins=_cors_origins,
         allow_credentials=True,
         allow_methods=["GET", "POST", "OPTIONS"],
         allow_headers=["Content-Type", "Authorization", "X-API-Key", "X-Request-ID"],
         expose_headers=["X-Request-ID", "X-RateLimit-Remaining"],
         max_age=3600,
     )
-    logger.info(f"CORS enabled for origins: {cors_origins}")
-else:
-    logger.info("CORS disabled (no origins configured)")
-
 
 # Add security middleware
-security_config = create_security_config_from_env()
-app.add_middleware(SecurityMiddleware, config=security_config)
+app.add_middleware(SecurityMiddleware, config=_create_security_config())
 
 
 # Request logging middleware
 @app.middleware("http")
-async def log_requests(request: Request, call_next):
+async def log_requests(request: Request, call_next: Any) -> Any:
     """Log requests and track metrics."""
-    global _metrics
-
-    request_id = request.headers.get("X-Request-ID", "")
+    request_id = request.headers.get("X-Request-ID") or str(uuid.uuid4())
     start = time.time()
 
-    logger.debug(f"[{request_id}] {request.method} {request.url.path}")
-    _metrics["requests_total"] += 1
+    logger.debug("[%s] %s %s", request_id, request.method, request.url.path)
 
     try:
         response = await call_next(request)
         duration = time.time() - start
 
-        if response.status_code < 400:
-            _metrics["requests_success"] += 1
-        else:
-            _metrics["requests_error"] += 1
+        status_class = f"{response.status_code // 100}xx"
+        prom.requests_total.labels(
+            method=request.method, status_class=status_class
+        ).inc()
+        prom.request_duration.labels(method=request.method).observe(duration)
 
         logger.info(
-            f"[{request_id}] {request.method} {request.url.path} "
-            f"- {response.status_code} ({duration:.3f}s)"
+            "[%s] %s %s - %d (%.3fs)",
+            request_id,
+            request.method,
+            request.url.path,
+            response.status_code,
+            duration,
         )
 
-        response.headers["X-Request-ID"] = request_id or "-"
+        response.headers["X-Request-ID"] = request_id
         response.headers["X-Response-Time"] = f"{duration:.3f}s"
 
         return response
     except Exception as e:
-        _metrics["requests_error"] += 1
-        logger.error(f"[{request_id}] Request failed: {e}")
+        prom.requests_total.labels(method=request.method, status_class="5xx").inc()
+        logger.error("[%s] Request failed: %s", request_id, e)
         raise
 
 
+def _get_handler(request: Request) -> JSONRPCHandler:
+    """Get handler from app state."""
+    handler: JSONRPCHandler | None = getattr(request.app.state, "handler", None)
+    if handler is None:
+        raise HTTPException(status_code=503, detail="Server not initialized")
+    return handler
+
+
 @app.get("/.well-known/agent.json")
-async def get_agent_card() -> JSONResponse:
+async def get_agent_card(request: Request) -> JSONResponse:
     """
     Agent Card discovery endpoint.
 
     Returns the A2A Agent Card describing this agent's capabilities.
     """
-    if _agent_card_builder is None:
+    builder: AgentCardBuilder | None = getattr(
+        request.app.state, "agent_card_builder", None
+    )
+    if builder is None:
         raise HTTPException(status_code=503, detail="Server not initialized")
 
-    card = _agent_card_builder.to_dict()
+    card = builder.to_dict()
     return JSONResponse(content=card)
 
 
@@ -285,10 +278,7 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
     - tasks/get: Get task by ID
     - tasks/cancel: Cancel a task
     """
-    global _metrics
-
-    if _handler is None:
-        raise HTTPException(status_code=503, detail="Server not initialized")
+    handler = _get_handler(request)
 
     try:
         body = await request.json()
@@ -305,37 +295,23 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
 
         # Track task creation
         if rpc_request.method == "message/send":
-            _metrics["tasks_created"] += 1
+            prom.tasks_created.inc()
 
-        response = await _handler.handle(rpc_request)
+        response = await handler.handle(rpc_request)
 
-        # Track completion - check response type
-        if hasattr(response, 'result') and response.result:
-            if rpc_request.method == "message/send":
-                _metrics["tasks_completed"] += 1
-        elif hasattr(response, 'error') and response.error:
-            if rpc_request.method == "message/send":
-                _metrics["tasks_failed"] += 1
+        # Track completion by response type
+        if rpc_request.method == "message/send":
+            if isinstance(response, JSONRPCSuccessResponse):
+                prom.tasks_completed.inc()
+            elif isinstance(response, JSONRPCErrorResponse):
+                prom.tasks_failed.inc()
 
         return JSONResponse(
             content=response.model_dump(by_alias=True, exclude_none=True)
         )
 
-    except ValueError as e:
-        logger.warning(f"Invalid request: {e}")
-        error_response = JSONRPCErrorResponse(
-            id=None,
-            error=JSONRPCError(
-                code=-32600,
-                message=f"Invalid request: {str(e)}",
-            ),
-        )
-        return JSONResponse(
-            content=error_response.model_dump(by_alias=True, exclude_none=True),
-            status_code=400,
-        )
-    except Exception as e:
-        logger.error(f"Request processing error: {e}")
+    except json.JSONDecodeError as e:
+        logger.warning("JSON parse error: %s", e)
         error_response = JSONRPCErrorResponse(
             id=None,
             error=JSONRPCError(
@@ -346,6 +322,45 @@ async def handle_jsonrpc(request: Request) -> JSONResponse:
         return JSONResponse(
             content=error_response.model_dump(by_alias=True, exclude_none=True),
             status_code=400,
+        )
+    except ValueError as e:
+        logger.warning("Invalid request: %s", e)
+        error_response = JSONRPCErrorResponse(
+            id=None,
+            error=JSONRPCError(
+                code=-32600,
+                message=f"Invalid request: {e!s}",
+            ),
+        )
+        return JSONResponse(
+            content=error_response.model_dump(by_alias=True, exclude_none=True),
+            status_code=400,
+        )
+    except SanhedrinError as e:
+        logger.error("Application error: %s", e)
+        error_response = JSONRPCErrorResponse(
+            id=None,
+            error=JSONRPCError(
+                code=e.code,
+                message=e.message,
+            ),
+        )
+        return JSONResponse(
+            content=error_response.model_dump(by_alias=True, exclude_none=True),
+            status_code=400,
+        )
+    except Exception as e:
+        logger.error("Internal error: %s", e)
+        error_response = JSONRPCErrorResponse(
+            id=None,
+            error=JSONRPCError(
+                code=-32603,
+                message="Internal error",
+            ),
+        )
+        return JSONResponse(
+            content=error_response.model_dump(by_alias=True, exclude_none=True),
+            status_code=500,
         )
 
 
@@ -359,8 +374,7 @@ async def handle_jsonrpc_stream(request: Request) -> StreamingResponse:
 
     Returns Server-Sent Events (SSE) stream.
     """
-    if _handler is None:
-        raise HTTPException(status_code=503, detail="Server not initialized")
+    handler = _get_handler(request)
 
     try:
         body = await request.json()
@@ -371,7 +385,7 @@ async def handle_jsonrpc_stream(request: Request) -> StreamingResponse:
         rpc_request = JSONRPCRequest(**body)
 
         async def event_generator() -> AsyncIterator[str]:
-            async for event in _handler.handle_stream(rpc_request):
+            async for event in handler.handle_stream(rpc_request):
                 yield event
 
         return StreamingResponse(
@@ -385,80 +399,54 @@ async def handle_jsonrpc_stream(request: Request) -> StreamingResponse:
         )
 
     except ValueError as e:
-        raise HTTPException(status_code=400, detail=f"Invalid request: {str(e)}")
+        raise HTTPException(status_code=400, detail=f"Invalid request: {e!s}") from e
     except Exception as e:
-        logger.error(f"Stream request error: {e}")
-        raise HTTPException(status_code=400, detail="Parse error")
+        logger.error("Stream request error: %s", e)
+        raise HTTPException(status_code=400, detail="Parse error") from e
 
 
 @app.get("/health")
-async def health_check() -> dict[str, Any]:
+async def health_check(request: Request) -> dict[str, Any]:
     """
     Health check endpoint.
 
     Returns adapter status and basic server info.
     """
-    if _adapter is None:
+    adapter = getattr(request.app.state, "adapter", None)
+    task_manager = getattr(request.app.state, "task_manager", None)
+
+    if adapter is None:
         return {
             "status": "initializing",
             "adapter": None,
         }
 
-    is_healthy = await _adapter.health_check()
+    is_healthy = await adapter.health_check()
 
     return {
         "status": "healthy" if is_healthy else "unhealthy",
         "adapter": {
-            "name": _adapter.name,
-            "display_name": _adapter.display_name,
-            "initialized": _adapter.is_initialized,
+            "name": adapter.name,
+            "display_name": adapter.display_name,
+            "initialized": adapter.is_initialized,
         },
-        "tasks": len(_task_manager) if _task_manager else 0,
+        "tasks": len(task_manager) if task_manager else 0,
     }
 
 
 @app.get("/metrics")
-async def get_metrics() -> PlainTextResponse:
+async def get_metrics(request: Request) -> PlainTextResponse:
     """
     Prometheus-style metrics endpoint.
 
     Returns metrics in text format for scraping.
     """
-    lines = [
-        "# HELP sanhedrin_requests_total Total number of requests",
-        "# TYPE sanhedrin_requests_total counter",
-        f'sanhedrin_requests_total {_metrics["requests_total"]}',
-        "",
-        "# HELP sanhedrin_requests_success Successful requests",
-        "# TYPE sanhedrin_requests_success counter",
-        f'sanhedrin_requests_success {_metrics["requests_success"]}',
-        "",
-        "# HELP sanhedrin_requests_error Failed requests",
-        "# TYPE sanhedrin_requests_error counter",
-        f'sanhedrin_requests_error {_metrics["requests_error"]}',
-        "",
-        "# HELP sanhedrin_tasks_created Total tasks created",
-        "# TYPE sanhedrin_tasks_created counter",
-        f'sanhedrin_tasks_created {_metrics["tasks_created"]}',
-        "",
-        "# HELP sanhedrin_tasks_completed Successfully completed tasks",
-        "# TYPE sanhedrin_tasks_completed counter",
-        f'sanhedrin_tasks_completed {_metrics["tasks_completed"]}',
-        "",
-        "# HELP sanhedrin_tasks_failed Failed tasks",
-        "# TYPE sanhedrin_tasks_failed counter",
-        f'sanhedrin_tasks_failed {_metrics["tasks_failed"]}',
-        "",
-        "# HELP sanhedrin_tasks_active Currently active tasks",
-        "# TYPE sanhedrin_tasks_active gauge",
-        f'sanhedrin_tasks_active {len(_task_manager) if _task_manager else 0}',
-        "",
-        "# HELP sanhedrin_tasks_cleaned Tasks cleaned up",
-        "# TYPE sanhedrin_tasks_cleaned counter",
-        f'sanhedrin_tasks_cleaned {_metrics["tasks_cleaned"]}',
-    ]
+    # Update active tasks gauge
+    task_manager = getattr(request.app.state, "task_manager", None)
+    prom.tasks_active.set(len(task_manager) if task_manager else 0)
 
-    return PlainTextResponse("\n".join(lines), media_type="text/plain")
+    output, content_type = prom.get_metrics_output()
+    return PlainTextResponse(output, media_type=content_type)
 
 
 @app.get("/")
@@ -489,6 +477,8 @@ def create_app(
     Returns:
         Configured FastAPI app
     """
+    import os
+
     if adapter_name:
         os.environ["SANHEDRIN_ADAPTER"] = adapter_name
     if base_url:
@@ -513,13 +503,15 @@ def serve(
         port: Port to bind to
         reload: Enable auto-reload for development
     """
+    import os
+
     import uvicorn
 
     os.environ["SANHEDRIN_ADAPTER"] = adapter
     os.environ["SANHEDRIN_HOST"] = host
     os.environ["SANHEDRIN_PORT"] = str(port)
 
-    logger.info(f"Starting server on {host}:{port} with adapter {adapter}")
+    logger.info("Starting server on %s:%d with adapter %s", host, port, adapter)
 
     uvicorn.run(
         "sanhedrin.server.app:app",

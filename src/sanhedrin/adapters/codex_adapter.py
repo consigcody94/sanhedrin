@@ -16,6 +16,8 @@ import os
 import shutil
 from typing import Any, AsyncIterator
 
+from typing_extensions import override
+
 from sanhedrin.adapters.base import (
     BaseAdapter,
     AdapterConfig,
@@ -81,14 +83,17 @@ class CodexCLIAdapter(BaseAdapter):
         self._cli_path: str | None = None
 
     @property
+    @override
     def name(self) -> str:
         return "codex-cli"
 
     @property
+    @override
     def display_name(self) -> str:
         return "Codex CLI"
 
     @property
+    @override
     def description(self) -> str:
         return (
             "OpenAI's Codex CLI - a lightweight coding agent that runs in your terminal. "
@@ -97,10 +102,12 @@ class CodexCLIAdapter(BaseAdapter):
         )
 
     @property
+    @override
     def cli_command(self) -> str:
         return self.CLI_COMMAND
 
     @property
+    @override
     def skills(self) -> list[AgentSkill]:
         return [
             AgentSkill(
@@ -149,6 +156,7 @@ class CodexCLIAdapter(BaseAdapter):
             ),
         ]
 
+    @override
     async def initialize(self) -> None:
         """Initialize adapter and verify CLI availability."""
         self._cli_path = shutil.which(self.CLI_COMMAND)
@@ -167,6 +175,7 @@ class CodexCLIAdapter(BaseAdapter):
 
         self._initialized = True
 
+    @override
     async def health_check(self) -> bool:
         """Check if Codex CLI is available."""
         try:
@@ -181,6 +190,7 @@ class CodexCLIAdapter(BaseAdapter):
         except (asyncio.TimeoutError, FileNotFoundError, OSError):
             return False
 
+    @override
     async def execute(
         self,
         prompt: str,
@@ -272,6 +282,7 @@ class CodexCLIAdapter(BaseAdapter):
                 message=str(e),
             )
 
+    @override
     async def execute_stream(
         self,
         prompt: str,

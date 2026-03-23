@@ -8,15 +8,18 @@ to A2A-compatible formats.
 
 from __future__ import annotations
 
+import asyncio
+import random
 from abc import ABC, abstractmethod
+from collections.abc import AsyncIterator, Callable, Coroutine
 from dataclasses import dataclass, field
-from typing import TYPE_CHECKING, Any, AsyncIterator
+from typing import TYPE_CHECKING, Any, Self
 
 from sanhedrin.core.types import (
+    AgentSkill,
     Message,
     Part,
     TextPart,
-    AgentSkill,
 )
 
 if TYPE_CHECKING:
@@ -29,7 +32,7 @@ class AdapterConfig:
 
     timeout: float = 120.0  # Execution timeout in seconds
     max_retries: int = 3  # Maximum retry attempts
-    retry_delay: float = 1.0  # Delay between retries in seconds
+    retry_delay: float = 1.0  # Base delay between retries in seconds
     streaming: bool = True  # Enable streaming by default
     extra: dict[str, Any] = field(default_factory=dict)  # Adapter-specific config
 
@@ -217,6 +220,42 @@ class BaseAdapter(ABC):
         """
         ...
 
+    async def _retry_with_backoff(
+        self,
+        coro_factory: Callable[[], Coroutine[Any, Any, Any]],
+        max_retries: int | None = None,
+        base_delay: float | None = None,
+    ) -> Any:
+        """
+        Retry a coroutine with exponential backoff and jitter.
+
+        Args:
+            coro_factory: Callable that creates a new coroutine on each call
+            max_retries: Override config max_retries
+            base_delay: Override config retry_delay
+
+        Returns:
+            The result of the coroutine
+
+        Raises:
+            The last exception if all retries are exhausted
+        """
+        retries = max_retries if max_retries is not None else self.config.max_retries
+        delay = base_delay if base_delay is not None else self.config.retry_delay
+
+        last_error: Exception | None = None
+        for attempt in range(retries + 1):
+            try:
+                return await coro_factory()
+            except Exception as e:
+                last_error = e
+                if attempt == retries:
+                    raise
+                wait = delay * (2**attempt) + random.uniform(0, delay * 0.1)  # noqa: S311
+                await asyncio.sleep(wait)
+
+        raise last_error  # type: ignore[misc]
+
     def message_to_prompt(self, message: Message) -> str:
         """
         Convert an A2A Message to a prompt string.
@@ -273,7 +312,7 @@ class BaseAdapter(ABC):
         context_parts = []
         for msg in context:
             # Handle both enum and string role values
-            role_value = msg.role.value if hasattr(msg.role, 'value') else msg.role
+            role_value = msg.role.value if hasattr(msg.role, "value") else msg.role
             role = "User" if role_value == "user" else "Assistant"
             content = self.message_to_prompt(msg)
             context_parts.append(f"{role}: {content}")
@@ -290,7 +329,7 @@ class BaseAdapter(ABC):
         """Check if adapter supports streaming responses."""
         return self.config.streaming
 
-    async def __aenter__(self) -> "BaseAdapter":
+    async def __aenter__(self) -> Self:
         """Async context manager entry."""
         await self.initialize()
         return self

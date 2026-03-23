@@ -21,6 +21,15 @@
 <img src="https://img.shields.io/badge/Ollama-✓_FREE-black?style=flat-square" alt="Ollama"/>
 </p>
 
+<!-- Badges Row 3 - Modernization -->
+<p>
+<img src="https://img.shields.io/badge/Pydantic-v2-e92063?style=flat-square&logo=pydantic&logoColor=white" alt="Pydantic v2"/>
+<img src="https://img.shields.io/badge/FastAPI-0.109+-009688?style=flat-square&logo=fastapi&logoColor=white" alt="FastAPI"/>
+<img src="https://img.shields.io/badge/structlog-JSON_Logging-blue?style=flat-square" alt="structlog"/>
+<img src="https://img.shields.io/badge/Prometheus-Metrics-e6522c?style=flat-square&logo=prometheus&logoColor=white" alt="Prometheus"/>
+<img src="https://img.shields.io/badge/mypy-strict-blue?style=flat-square" alt="mypy strict"/>
+</p>
+
 <br/>
 
 <!-- Tagline Box -->
@@ -38,6 +47,7 @@
 ║       ✨ CLI-First: Use your existing subscriptions                      ║
 ║       ✨ A2A Protocol: Industry-standard interoperability                ║
 ║       ✨ Multi-Agent: Intelligent routing & orchestration                ║
+║       ✨ Production-Ready: Structured logging & Prometheus metrics       ║
 ║                                                                          ║
 ╚══════════════════════════════════════════════════════════════════════════╝
 ```
@@ -136,8 +146,13 @@ Your App → Sanhedrin → claude CLI ✨
 │   └───────────────┘  └───────────────┘  └───────────────┘  └─────────────┘ │
 │                                                                             │
 │   ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌─────────────┐ │
-│   │  📡 Discovery │  │  🔄 Tasks     │  │  💻 CLI-First │  │ 🆓 Ollama   │ │
-│   │  Agent Cards  │  │  Lifecycle    │  │   No API $$$  │  │   Free!     │ │
+│   │  📡 Discovery │  │  📊 Prometheus│  │  💻 CLI-First │  │ 🆓 Ollama   │ │
+│   │  Agent Cards  │  │   Metrics     │  │   No API $$$  │  │   Free!     │ │
+│   └───────────────┘  └───────────────┘  └───────────────┘  └─────────────┘ │
+│                                                                             │
+│   ┌───────────────┐  ┌───────────────┐  ┌───────────────┐  ┌─────────────┐ │
+│   │  📋 Structured│  │  🔒 Security  │  │  🔄 Tasks     │  │ ⚡ Async    │ │
+│   │   Logging     │  │  Middleware   │  │  Lifecycle    │  │  TaskGroup  │ │
 │   └───────────────┘  └───────────────┘  └───────────────┘  └─────────────┘ │
 │                                                                             │
 └─────────────────────────────────────────────────────────────────────────────┘
@@ -156,6 +171,7 @@ Your App → Sanhedrin → claude CLI ✨
 - **JSON-RPC 2.0** - Standard transport
 - **SSE Streaming** - Real-time responses
 - **Agent Cards** - `.well-known/agent.json`
+- **Prometheus Metrics** - `/metrics` endpoint
 
 </td>
 <td width="50%">
@@ -164,7 +180,8 @@ Your App → Sanhedrin → claude CLI ✨
 - **Multi-Agent Orchestration** - Catalog & Router
 - **Skill-Based Routing** - Match tasks to agents
 - **Task State Machine** - Full lifecycle management
-- **Pydantic v2** - Type-safe models
+- **Pydantic v2** - Type-safe models with `StrEnum`
+- **Structured Logging** - JSON logs via `structlog`
 
 </td>
 </tr>
@@ -325,7 +342,13 @@ print(response.json())
                       Protocol║  │  • /.well-known/agent.json (Card)   │  ║
    ┌──────────────┐           ║  │  • /a2a (JSON-RPC endpoint)         │  ║
    │ Other Agents │──────────▶║  │  • /a2a/stream (SSE streaming)      │  ║
-   └──────────────┘           ║  └─────────────────────────────────────┘  ║
+   └──────────────┘           ║  │  • /health • /metrics (Prometheus)  │  ║
+                              ║  └─────────────────────────────────────┘  ║
+                              ║           │                  │            ║
+                              ║     ┌─────▼──────┐   ┌──────▼───────┐    ║
+                              ║     │  structlog  │   │  Prometheus  │    ║
+                              ║     │  (JSON/Dev) │   │   Metrics    │    ║
+                              ║     └────────────┘   └──────────────┘    ║
                               ║                     │                      ║
                               ║                     ▼                      ║
                               ║  ┌─────────────────────────────────────┐  ║
@@ -384,6 +407,8 @@ graph TB
         RPC[📡 JSON-RPC Handler]
         TM[📋 Task Manager]
         SM[🔄 State Machine]
+        LOG[📋 structlog]
+        MET[📊 Prometheus]
     end
 
     subgraph "Orchestration"
@@ -407,6 +432,7 @@ graph TB
 
     C1 & C2 & C3 -->|HTTP/A2A| API
     API --> RPC
+    API --> LOG & MET
     RPC --> TM
     TM --> SM
     TM --> RTR
@@ -420,6 +446,8 @@ graph TB
     style API fill:#4CAF50,color:white
     style CAT fill:#2196F3,color:white
     style RTR fill:#FF9800,color:white
+    style LOG fill:#9C27B0,color:white
+    style MET fill:#E65100,color:white
 ```
 
 </details>
@@ -589,6 +617,15 @@ ollama pull llama3.2
 | `tasks/get` | Retrieve task by ID | ❌ |
 | `tasks/cancel` | Cancel a running task | ❌ |
 
+### Observability Endpoints
+
+| Endpoint | Description |
+|----------|-------------|
+| `GET /health` | Adapter health status + active task count |
+| `GET /metrics` | Prometheus-format metrics (requests, tasks, durations) |
+| `GET /docs` | Swagger UI (auto-generated) |
+| `GET /redoc` | ReDoc documentation |
+
 <br/>
 
 ---
@@ -626,13 +663,31 @@ pip install -e ".[dev]"
 # Run tests
 pytest -v
 
-# Type checking
+# Type checking (strict mode)
 mypy src/sanhedrin
 
-# Lint
+# Lint & format
 ruff check src/
 ruff format src/
 ```
+
+### 🔧 Tech Stack
+
+<div align="center">
+
+| Category | Technology |
+|:--------:|:----------:|
+| **Runtime** | Python 3.11+ with `StrEnum`, `TaskGroup`, `Self` |
+| **Web Framework** | FastAPI + Uvicorn (ASGI) |
+| **Type Safety** | Pydantic v2 (strict) + mypy (strict) |
+| **Logging** | `structlog` (JSON in prod, colored in dev) |
+| **Metrics** | `prometheus_client` (counters, histograms, gauges) |
+| **Linting** | Ruff (lint + format + isort + security) |
+| **Testing** | pytest + pytest-asyncio + coverage |
+| **CI/CD** | GitHub Actions (lint, test matrix, security, Docker) |
+| **Container** | Multi-stage Docker + docker-compose |
+
+</div>
 
 ### Project Structure
 
@@ -640,28 +695,31 @@ ruff format src/
 sanhedrin/
 ├── src/sanhedrin/
 │   ├── core/              # A2A types, state machine, errors
-│   │   ├── types.py       # Pydantic models (Task, Message, AgentCard)
+│   │   ├── types.py       # Pydantic v2 models with StrEnum
 │   │   ├── state_machine.py
-│   │   └── errors.py
+│   │   └── errors.py      # Error hierarchy with A2A codes
 │   ├── adapters/          # CLI tool wrappers
-│   │   ├── base.py        # BaseAdapter abstract class
-│   │   ├── claude_adapter.py
+│   │   ├── base.py        # BaseAdapter ABC (Self, retry backoff)
+│   │   ├── claude_adapter.py   # @override decorators
 │   │   ├── gemini_adapter.py
 │   │   ├── codex_adapter.py
 │   │   ├── ollama_adapter.py
 │   │   └── registry.py    # Adapter registration
 │   ├── server/            # FastAPI A2A server
-│   │   ├── app.py         # Main application
+│   │   ├── app.py         # App with app.state DI + TaskGroup
 │   │   ├── task_manager.py
+│   │   ├── metrics.py     # Prometheus metrics module
 │   │   └── handlers/      # JSON-RPC handlers
 │   ├── orchestration/     # Multi-agent coordination
 │   │   ├── catalog.py     # Agent registry
 │   │   └── router.py      # Routing strategies
-│   ├── config/            # Pydantic settings
+│   ├── auth/              # Security middleware
+│   ├── config/            # Pydantic settings (single source of truth)
+│   ├── logging.py         # structlog configuration
 │   └── cli/               # Typer CLI
 ├── examples/              # Usage examples
-├── tests/                 # Test suite
-└── docs/                  # Documentation
+├── tests/                 # Test suite (unit, integration, e2e)
+└── pyproject.toml         # Modern packaging (hatchling)
 ```
 
 <br/>
@@ -684,13 +742,16 @@ Contributions are welcome! Here's how:
 
 ```python
 # src/sanhedrin/adapters/my_adapter.py
-from sanhedrin.adapters.base import BaseAdapter
+from typing_extensions import override
+from sanhedrin.adapters.base import BaseAdapter, ExecutionResult
 
 class MyAdapter(BaseAdapter):
     @property
+    @override
     def name(self) -> str:
         return "my-adapter"
 
+    @override
     async def execute(self, prompt: str, **kwargs) -> ExecutionResult:
         # Your implementation
         ...

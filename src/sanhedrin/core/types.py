@@ -7,9 +7,9 @@ Specification: https://a2a-protocol.org/latest/specification/
 
 from __future__ import annotations
 
-from datetime import datetime, timezone
-from enum import Enum
-from typing import Annotated, Any, Literal, Union
+from datetime import UTC, datetime
+from enum import StrEnum
+from typing import Annotated, Any, Literal
 from uuid import uuid4
 
 from pydantic import BaseModel, ConfigDict, Field
@@ -22,7 +22,7 @@ def generate_id() -> str:
 
 def utc_now_iso() -> str:
     """Get current UTC time in ISO 8601 format."""
-    return datetime.now(timezone.utc).isoformat()
+    return datetime.now(UTC).isoformat()
 
 
 class SanhedrinBaseModel(BaseModel):
@@ -41,7 +41,7 @@ class SanhedrinBaseModel(BaseModel):
 # ============================================================================
 
 
-class TaskState(str, Enum):
+class TaskState(StrEnum):
     """
     A2A Task lifecycle states.
 
@@ -59,14 +59,14 @@ class TaskState(str, Enum):
     UNKNOWN = "unknown"
 
 
-class Role(str, Enum):
+class Role(StrEnum):
     """Message sender role."""
 
     USER = "user"
     AGENT = "agent"
 
 
-class PartKind(str, Enum):
+class PartKind(StrEnum):
     """Types of message parts."""
 
     TEXT = "text"
@@ -142,7 +142,7 @@ class DataPart(SanhedrinBaseModel):
 
 
 # Union type for all part kinds
-Part = Annotated[Union[TextPart, FilePart, DataPart], Field(discriminator="kind")]
+Part = Annotated[TextPart | FilePart | DataPart, Field(discriminator="kind")]
 
 
 # ============================================================================
@@ -205,6 +205,12 @@ class TaskStatus(SanhedrinBaseModel):
     )
     timestamp: str | None = Field(
         default_factory=utc_now_iso, description="ISO 8601 timestamp"
+    )
+    created_at: datetime | None = Field(
+        default=None, alias="createdAt", description="Task creation time"
+    )
+    updated_at: datetime | None = Field(
+        default=None, alias="updatedAt", description="Last update time"
     )
 
 
@@ -383,9 +389,7 @@ class AgentCard(SanhedrinBaseModel):
     capabilities: AgentCapabilities = Field(
         default_factory=AgentCapabilities, description="Supported capabilities"
     )
-    skills: list[AgentSkill] = Field(
-        default_factory=list, description="Agent skills"
-    )
+    skills: list[AgentSkill] = Field(default_factory=list, description="Agent skills")
 
     default_input_modes: list[str] = Field(
         default_factory=lambda: ["text/plain"],
@@ -439,9 +443,7 @@ class JSONRPCRequest(SanhedrinBaseModel):
     jsonrpc: Literal["2.0"] = "2.0"
     id: str | int = Field(..., description="Request identifier")
     method: str = Field(..., description="Method name")
-    params: dict[str, Any] | None = Field(
-        default=None, description="Method parameters"
-    )
+    params: dict[str, Any] | None = Field(default=None, description="Method parameters")
 
 
 class JSONRPCError(SanhedrinBaseModel):
@@ -486,7 +488,9 @@ class MessageSendConfiguration(SanhedrinBaseModel):
         default=None, description="Wait for completion before responding"
     )
     history_length: int | None = Field(
-        default=None, alias="historyLength", description="Messages to include in history"
+        default=None,
+        alias="historyLength",
+        description="Messages to include in history",
     )
     push_notification_config: dict[str, Any] | None = Field(
         default=None, alias="pushNotificationConfig", description="Webhook config"
@@ -551,9 +555,7 @@ class TaskArtifactUpdateEvent(SanhedrinBaseModel):
     task_id: str = Field(..., alias="taskId", description="Task identifier")
     context_id: str = Field(..., alias="contextId", description="Context identifier")
     artifact: Artifact = Field(..., description="Artifact content")
-    append: bool | None = Field(
-        default=None, description="Append to existing artifact"
-    )
+    append: bool | None = Field(default=None, description="Append to existing artifact")
     last_chunk: bool | None = Field(
         default=None, alias="lastChunk", description="Final chunk indicator"
     )

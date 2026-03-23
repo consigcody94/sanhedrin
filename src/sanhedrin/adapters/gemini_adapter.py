@@ -16,6 +16,8 @@ import os
 import shutil
 from typing import Any, AsyncIterator
 
+from typing_extensions import override
+
 from sanhedrin.adapters.base import (
     BaseAdapter,
     AdapterConfig,
@@ -73,14 +75,17 @@ class GeminiCLIAdapter(BaseAdapter):
         self._cli_path: str | None = None
 
     @property
+    @override
     def name(self) -> str:
         return "gemini-cli"
 
     @property
+    @override
     def display_name(self) -> str:
         return "Gemini CLI"
 
     @property
+    @override
     def description(self) -> str:
         return (
             "Google's Gemini CLI - an open-source AI agent with access to "
@@ -89,10 +94,12 @@ class GeminiCLIAdapter(BaseAdapter):
         )
 
     @property
+    @override
     def cli_command(self) -> str:
         return self.CLI_COMMAND
 
     @property
+    @override
     def skills(self) -> list[AgentSkill]:
         return [
             AgentSkill(
@@ -141,6 +148,7 @@ class GeminiCLIAdapter(BaseAdapter):
             ),
         ]
 
+    @override
     async def initialize(self) -> None:
         """Initialize adapter and verify CLI availability."""
         self._cli_path = shutil.which(self.CLI_COMMAND)
@@ -159,6 +167,7 @@ class GeminiCLIAdapter(BaseAdapter):
 
         self._initialized = True
 
+    @override
     async def health_check(self) -> bool:
         """Check if Gemini CLI is available."""
         try:
@@ -173,6 +182,7 @@ class GeminiCLIAdapter(BaseAdapter):
         except (asyncio.TimeoutError, FileNotFoundError, OSError):
             return False
 
+    @override
     async def execute(
         self,
         prompt: str,
@@ -251,6 +261,7 @@ class GeminiCLIAdapter(BaseAdapter):
                 message=str(e),
             )
 
+    @override
     async def execute_stream(
         self,
         prompt: str,

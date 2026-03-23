@@ -21,6 +21,7 @@ if TYPE_CHECKING:
 # JSON-RPC Error Codes (Standard)
 # ============================================================================
 
+
 class ErrorCode:
     """JSON-RPC 2.0 and A2A error codes."""
 
@@ -41,6 +42,7 @@ class ErrorCode:
     AUTHENTICATION_REQUIRED = -32007
     AUTHORIZATION_FAILED = -32008
     VERSION_NOT_SUPPORTED = -32009
+    INVALID_STATE_TRANSITION = -32010
 
 
 # ============================================================================
@@ -257,9 +259,9 @@ class InvalidStateTransitionError(SanhedrinError):
 
     def __init__(
         self,
-        from_state: "TaskState",
-        to_state: "TaskState",
-        valid_transitions: set["TaskState"] | None = None,
+        from_state: TaskState,
+        to_state: TaskState,
+        valid_transitions: set[TaskState] | None = None,
     ) -> None:
         msg = f"Invalid state transition: {from_state.value} -> {to_state.value}"
         if valid_transitions:
@@ -315,9 +317,7 @@ class AdapterExecutionError(AdapterError):
 class AdapterNotFoundError(SanhedrinError):
     """Requested adapter not found in registry."""
 
-    def __init__(
-        self, name: str, available: list[str] | None = None
-    ) -> None:
+    def __init__(self, name: str, available: list[str] | None = None) -> None:
         msg = f"Adapter not found: {name}"
         if available:
             msg += f" (available: {', '.join(available)})"

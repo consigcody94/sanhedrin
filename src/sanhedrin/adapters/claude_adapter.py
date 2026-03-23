@@ -13,23 +13,29 @@ from __future__ import annotations
 
 import asyncio
 import json
+import logging
 import os
 import shutil
-from typing import Any, AsyncIterator
+from collections.abc import AsyncIterator
+from typing import Any
+
+from typing_extensions import override
 
 from sanhedrin.adapters.base import (
-    BaseAdapter,
     AdapterConfig,
+    BaseAdapter,
     ExecutionResult,
     StreamChunk,
 )
-from sanhedrin.core.types import AgentSkill, Message
 from sanhedrin.core.errors import (
-    AdapterInitializationError,
     AdapterExecutionError,
+    AdapterInitializationError,
     AdapterTimeoutError,
     CLINotFoundError,
 )
+from sanhedrin.core.types import AgentSkill, Message
+
+logger = logging.getLogger(__name__)
 
 
 class ClaudeCodeAdapter(BaseAdapter):
@@ -74,14 +80,17 @@ class ClaudeCodeAdapter(BaseAdapter):
         self._cli_path: str | None = None
 
     @property
+    @override
     def name(self) -> str:
         return "claude-code"
 
     @property
+    @override
     def display_name(self) -> str:
         return "Claude Code"
 
     @property
+    @override
     def description(self) -> str:
         return (
             "Anthropic's Claude Code CLI - an agentic AI coding assistant "
@@ -90,10 +99,12 @@ class ClaudeCodeAdapter(BaseAdapter):
         )
 
     @property
+    @override
     def cli_command(self) -> str:
         return self.CLI_COMMAND
 
     @property
+    @override
     def skills(self) -> list[AgentSkill]:
         return [
             AgentSkill(
@@ -153,6 +164,7 @@ class ClaudeCodeAdapter(BaseAdapter):
             ),
         ]
 
+    @override
     async def initialize(self) -> None:
         """Initialize adapter and verify CLI availability."""
         # Find CLI
@@ -173,6 +185,7 @@ class ClaudeCodeAdapter(BaseAdapter):
 
         self._initialized = True
 
+    @override
     async def health_check(self) -> bool:
         """Check if Claude CLI is available and responding."""
         try:
@@ -184,9 +197,10 @@ class ClaudeCodeAdapter(BaseAdapter):
             )
             _, _ = await asyncio.wait_for(proc.communicate(), timeout=10.0)
             return proc.returncode == 0
-        except (asyncio.TimeoutError, FileNotFoundError, OSError):
+        except (TimeoutError, FileNotFoundError, OSError):
             return False
 
+    @override
     async def execute(
         self,
         prompt: str,
@@ -264,17 +278,18 @@ class ClaudeCodeAdapter(BaseAdapter):
                 exit_code=0,
             )
 
-        except asyncio.TimeoutError:
+        except TimeoutError as e:
             raise AdapterTimeoutError(
                 adapter=self.name,
                 timeout=self.config.timeout,
-            )
+            ) from e
         except Exception as e:
             raise AdapterExecutionError(
                 adapter=self.name,
                 message=str(e),
-            )
+            ) from e
 
+    @override
     async def execute_stream(
         self,
         prompt: str,
@@ -342,13 +357,17 @@ class ClaudeCodeAdapter(BaseAdapter):
             await proc.wait()
 
             # Check for errors
-            if proc.returncode != 0 and proc.stderr:
-                stderr = await proc.stderr.read()
+            if proc.returncode != 0:
+                stderr_data = await proc.stderr.read() if proc.stderr else b""
                 yield StreamChunk(
                     content="",
                     is_final=True,
                     chunk_type="error",
-                    metadata={"error": stderr.decode()},
+                    metadata={
+                        "error": stderr_data.decode()
+                        if stderr_data
+                        else f"Exit code {proc.returncode}"
+                    },
                 )
             else:
                 yield StreamChunk(content="", is_final=True)
@@ -419,7 +438,10 @@ class ClaudeCodeAdapter(BaseAdapter):
                 if data.get("type") == "text" and "text" in data:
                     return data["text"]
 
-        return str(data)
+        logger.warning(
+            "Could not extract content from response: %s", type(data).__name__
+        )
+        return json.dumps(data) if isinstance(data, (dict, list)) else str(data)
 
     def _parse_stream_chunk(self, line: str) -> tuple[str, dict[str, Any]]:
         """

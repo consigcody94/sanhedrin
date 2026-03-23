@@ -12,6 +12,8 @@ from __future__ import annotations
 import asyncio
 from typing import Any, AsyncIterator
 
+from typing_extensions import override
+
 from sanhedrin.adapters.base import (
     BaseAdapter,
     AdapterConfig,
@@ -86,14 +88,17 @@ class OllamaAdapter(BaseAdapter):
         self._available_models: list[str] = []
 
     @property
+    @override
     def name(self) -> str:
         return "ollama"
 
     @property
+    @override
     def display_name(self) -> str:
         return f"Ollama ({self.model})"
 
     @property
+    @override
     def description(self) -> str:
         return (
             f"Local Ollama instance running {self.model}. "
@@ -106,6 +111,7 @@ class OllamaAdapter(BaseAdapter):
         return "ollama"  # For reference, though we use SDK
 
     @property
+    @override
     def skills(self) -> list[AgentSkill]:
         return [
             AgentSkill(
@@ -154,6 +160,7 @@ class OllamaAdapter(BaseAdapter):
             ),
         ]
 
+    @override
     async def initialize(self) -> None:
         """Initialize Ollama client and verify connection."""
         if not OLLAMA_AVAILABLE:
@@ -211,6 +218,7 @@ class OllamaAdapter(BaseAdapter):
 
         self._initialized = True
 
+    @override
     async def health_check(self) -> bool:
         """Check if Ollama server is running."""
         try:
@@ -223,6 +231,7 @@ class OllamaAdapter(BaseAdapter):
         except Exception:
             return False
 
+    @override
     async def execute(
         self,
         prompt: str,
@@ -280,6 +289,7 @@ class OllamaAdapter(BaseAdapter):
                 message=str(e),
             )
 
+    @override
     async def execute_stream(
         self,
         prompt: str,
